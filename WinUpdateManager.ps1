@@ -271,11 +271,9 @@ function Find-WindowsUpdates {
     if (-not (Import-PSWindowsUpdateOrExplain)) { return @() }
     try {
         Write-Progress -Activity "Windows Updates" -Status "Suche nach verfügbaren Updates..." -PercentComplete 0
-        Write-Host "Debug: Starte Get-WindowsUpdate..." -ForegroundColor DarkGray
         
         # Direkter Aufruf ohne Job - einfacher und zuverlässiger
         $list = Get-WindowsUpdate -MicrosoftUpdate
-        Write-Host "Debug: $($list.Count) Windows-Updates von Get-WindowsUpdate erhalten" -ForegroundColor DarkGray
         
         Write-Progress -Activity "Windows Updates" -Status "Verarbeite gefundene Updates..." -PercentComplete 50
         $out = @(); foreach ($u in $list) {
@@ -286,12 +284,10 @@ function Find-WindowsUpdates {
         Write-Progress -Activity "Windows Updates" -Status "Abgeschlossen" -PercentComplete 100
         Start-Sleep -Milliseconds 500
         Write-Progress -Activity "Windows Updates" -Completed
-        Write-Host "Debug: $($out.Count) Windows-Updates verarbeitet" -ForegroundColor DarkGray
         return $out
     }
     catch { 
         Write-Progress -Activity "Windows Updates" -Completed
-        Write-Host "Debug: Fehler in Find-WindowsUpdates: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host "❌ Fehler beim Abfragen der Windows-Updates: $($_.Exception.Message)" -ForegroundColor Red; "Fehler Get-WindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append; return @() 
     }
 }
@@ -328,7 +324,6 @@ function Invoke-WindowsUpdateInstall {
 # --- Software (winget) ---------------------------------------------------------
 
 function Find-SoftwareUpdates {
-    Write-Host "Debug: Find-SoftwareUpdates gestartet" -ForegroundColor DarkGray
     if (-not (Test-WingetPresent)) {
         Write-Host "❌ winget nicht verfügbar. Installiere/aktualisiere den *App-Installer* (Microsoft Store)." -ForegroundColor Red
         "Fehler: winget fehlte." | Out-File $LogFile -Append; return @()
@@ -624,7 +619,6 @@ do {
             $win = Find-WindowsUpdates
             Write-Host "Suche nach Software Updates..." -ForegroundColor Gray
             $sw = Find-SoftwareUpdates
-            Write-Host "Debug: $($win.Count) Windows-Updates, $($sw.Count) Software-Updates gefunden" -ForegroundColor DarkGray
 
             # Verwende die neue kombinierte Anzeige-Funktion
             $allUpdates = Show-CombinedUpdateList -WindowsItems $win -SoftwareItems $sw -ExcludeConfig ([ref]$Excl)
@@ -632,8 +626,6 @@ do {
             # Filtere erlaubte Updates aus der kombinierten Liste
             $allowedKBs = $allUpdates | Where-Object { $_.Kind -eq 'Windows' -and (-not $_.Excluded) } | Select-Object -ExpandProperty Key
             $allowedIDs = $allUpdates | Where-Object { $_.Kind -eq 'Software' -and (-not $_.Excluded) } | Select-Object -ExpandProperty Key
-
-            Write-Host "Debug: $($allowedKBs.Count) Windows-Updates erlaubt, $($allowedIDs.Count) Software-Updates erlaubt" -ForegroundColor DarkGray
 
             if (($allowedKBs.Count -gt 0) -or ($allowedIDs.Count -gt 0)) {
                 if ((Read-Host "`nSollen alle NICHT ausgeschlossenen Updates installiert werden? (J/N)") -match '^(J|j)$') {
