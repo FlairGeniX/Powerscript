@@ -13,15 +13,15 @@ function Test-Admin {
 }
 
 if (-not (Test-Admin)) {
-    Write-Host "🔒 Nicht mit Administratorrechten gestartet." -ForegroundColor Yellow
-    Write-Host "    Installation von Updates benötigt Adminrechte." -ForegroundColor Yellow
-    $opt = Read-Host "1) Als Admin neu starten  |  2) Beenden  (1/2)"
+    Write-Host "Nicht mit Administratorrechten gestartet." -ForegroundColor Yellow
+    Write-Host "Installation von Updates benötigt Adminrechte." -ForegroundColor Yellow
+    $opt = Read-Host "1=Als Admin neu starten  |  2=Beenden  (1 oder 2 eingeben)"
     switch ($opt) {
         '1' {
-            if (-not $PSCommandPath) { Write-Host "❌ Datei erst speichern und erneut ausführen." -ForegroundColor Red; return }
+            if (-not $PSCommandPath) { Write-Host "Datei erst speichern und erneut ausführen." -ForegroundColor Red; return }
             $hostExe = (Get-Process -Id $PID).Path
             try { Start-Process $hostExe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs; return }
-            catch { Write-Host "❌ Elevation fehlgeschlagen: $($_.Exception.Message)" -ForegroundColor Red; return }
+            catch { Write-Host "Elevation fehlgeschlagen: $($_.Exception.Message)" -ForegroundColor Red; return }
         }
         '2' { Write-Host "Beende…" -ForegroundColor Cyan; return }
         default { Write-Host "Ungültige Eingabe. Beende." -ForegroundColor Red; return }
@@ -45,6 +45,8 @@ function Get-ExcludeConfig {
 
 function Set-ExcludeConfig { param($Config) $Config | ConvertTo-Json -Depth 5 | Out-File -Encoding UTF8 $ExcludePath }
 
+# --- Wenn Exclude-Liste leer ist -----------------------------------------------
+# --- Standard-Einträge deren Update Probleme machen könnten --------------------
 $Excl = Get-ExcludeConfig
 if (($Excl.WindowsKB.Count -eq 0) -and ($Excl.WingetIDs.Count -eq 0)) {
     $Excl.WingetIDs = @(
@@ -53,7 +55,7 @@ if (($Excl.WindowsKB.Count -eq 0) -and ($Excl.WingetIDs.Count -eq 0)) {
         'MySQL.MySQLServer', 'PostgreSQL.PostgreSQL', 'Node.js.Node.js', 'PHP.PHP'
     )
     Set-ExcludeConfig $Excl
-    Write-Host "ℹ️ Exclude-Liste mit Standard-Einträgen initialisiert." -ForegroundColor Cyan
+    Write-Host "Exclude-Liste mit Standard-Einträgen initialisiert." -ForegroundColor Cyan
 }
 
 # --- Utilities -----------------------------------------------------------------
@@ -89,10 +91,10 @@ function Test-PSWindowsUpdatePresent {
 }
 function Import-PSWindowsUpdateOrExplain {
     if (-not (Test-PSWindowsUpdatePresent)) {
-        Write-Host "❌ PSWindowsUpdate nicht gefunden." -ForegroundColor Red
-        Write-Host "👉 Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
-        Write-Host "   (NuGet ggf.: Get-PackageProvider NuGet -ForceBootstrap -Force)" -ForegroundColor Gray
-        if (Test-Path variable:LogFile) { "Fehler: PSWindowsUpdate fehlte." | Out-File $LogFile -Append }
+        Write-Host "PSWindowsUpdate nicht gefunden." -ForegroundColor Red
+        Write-Host "Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
+        Write-Host "(NuGet ggf.: Get-PackageProvider NuGet -ForceBootstrap -Force)" -ForegroundColor Gray
+        if (Test-Path variable:LogFile) { "!!! Fehler: PSWindowsUpdate fehlte." | Out-File $LogFile -Append }
         return $false
     }
     try {
@@ -115,7 +117,7 @@ function Import-PSWindowsUpdateOrExplain {
                 try {
                     # Expliziter Import über Pfad
                     Import-Module $fullPath -ErrorAction Stop
-                    Write-Host "✅ PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
+                    Write-Host "PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
                     return $true
                 }
                 catch {
@@ -124,9 +126,9 @@ function Import-PSWindowsUpdateOrExplain {
             }
         }
         
-        Write-Host "❌ Fehler beim Importieren von PSWindowsUpdate: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "💡 Versuchen Sie: Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
-        if (Test-Path variable:LogFile) { "Fehler Import PSWindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append }
+        Write-Host "!!! Fehler beim Importieren von PSWindowsUpdate: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Versuchen Sie: Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
+        if (Test-Path variable:LogFile) { "!!! Fehler Import PSWindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append }
         return $false
     }
 }
@@ -146,7 +148,7 @@ function Show-NumberedList {
     }
 
     Write-Host ""
-    Write-Host "👉 Einträge auf Excludeliste eintragen/entfernen? Nummern (z.B. 1,3,5 oder 2-4) – W=weiter" -ForegroundColor DarkGray
+    Write-Host "Möchten Sie Updates in der Ausschlussliste eintragen/entfernen? Wenn ja, dann Nummern (z.B. 1,3,5 oder 2-4). Wenn nicht, dann ENTER oder W=weiter eingeben" -ForegroundColor DarkGray
     $sel = Read-Host "Auswahl"
     if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $Items }
 
@@ -162,21 +164,21 @@ function Show-NumberedList {
         if ($Kind -eq 'Windows') {
             if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
                 $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Exclude entfernt" -f $item.Title) -ForegroundColor Green
+                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
             }
             else {
                 $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Exclude-Liste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
             }
         }
         else {
             if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
                 $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Exclude entfernt" -f $item.Title) -ForegroundColor Green
+                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
             }
             else {
                 $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Exclude-Liste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
             }
         }
     }
@@ -227,7 +229,8 @@ function Show-CombinedUpdateList {
     }
 
     Write-Host ""
-    Write-Host "👉 Einträge auf Excludeliste eintragen/entfernen? Nummern (z.B. 1,3,5 oder 2-4) – W=weiter" -ForegroundColor DarkGray
+    Write-Host "(X markierte Updates stehen auf Ausschlussliste)"
+    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?Wenn ja, dann Nummern (z.B. 1,3,5 oder 2-4). Wenn nicht, dann ENTER oder W=weiter eingeben" -ForegroundColor DarkGray
     $sel = Read-Host "Auswahl"
     if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $allItems }
 
@@ -243,21 +246,21 @@ function Show-CombinedUpdateList {
         if ($item.Kind -eq 'Windows') {
             if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
                 $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Exclude entfernt" -f $item.Title) -ForegroundColor Green
+                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
             }
             else {
                 $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Exclude-Liste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
             }
         }
         else {
             if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
                 $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Exclude entfernt" -f $item.Title) -ForegroundColor Green
+                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
             }
             else {
                 $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Exclude-Liste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
             }
         }
     }
@@ -288,13 +291,13 @@ function Find-WindowsUpdates {
     }
     catch { 
         Write-Progress -Activity "Windows Updates" -Completed
-        Write-Host "❌ Fehler beim Abfragen der Windows-Updates: $($_.Exception.Message)" -ForegroundColor Red; "Fehler Get-WindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append; return @() 
+        Write-Host "!!! Fehler beim Abfragen der Windows-Updates: $($_.Exception.Message)" -ForegroundColor Red; "!!! Fehler Get-WindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append; return @() 
     }
 }
 function Invoke-WindowsUpdateInstall {
     param([switch]$AutoReboot, [array]$Allowed)
     if (-not (Import-PSWindowsUpdateOrExplain)) { return }
-    if (-not (Test-Admin)) { Write-Host "🔒 Adminrechte nötig. Bitte als Administrator erneut ausführen." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Windows)" | Out-File $LogFile -Append; return }
+    if (-not (Test-Admin)) { Write-Host "Adminrechte nötig. Bitte als Administrator erneut ausführen." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Windows)" | Out-File $LogFile -Append; return }
     try {
         $allowedKBs = $Allowed | Where-Object { $_ -match '^\d{4,}$' }
         if ($allowedKBs.Count -gt 0) {
@@ -317,7 +320,7 @@ function Invoke-WindowsUpdateInstall {
     }
     catch { 
         Write-Progress -Activity "Windows Update Installation" -Completed
-        Write-Host "❌ Fehler bei der Windows-Installation: $($_.Exception.Message)" -ForegroundColor Red; "Fehler Install-WindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append 
+        Write-Host "!!! Fehler bei der Windows-Installation: $($_.Exception.Message)" -ForegroundColor Red; "!!! Fehler Install-WindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append 
     }
 }
 
@@ -325,8 +328,8 @@ function Invoke-WindowsUpdateInstall {
 
 function Find-SoftwareUpdates {
     if (-not (Test-WingetPresent)) {
-        Write-Host "❌ winget nicht verfügbar. Installiere/aktualisiere den *App-Installer* (Microsoft Store)." -ForegroundColor Red
-        "Fehler: winget fehlte." | Out-File $LogFile -Append; return @()
+        Write-Host "!! winget nicht verfügbar. Installiere/aktualisiere den *App-Installer* (Microsoft Store)." -ForegroundColor Red
+        "!!! Fehler: winget fehlte." | Out-File $LogFile -Append; return @()
     }
 
     Write-Progress -Activity "Software Updates" -Status "Initialisiere winget Suche..." -PercentComplete 0
@@ -472,7 +475,7 @@ function Find-SoftwareUpdates {
 function Invoke-SoftwareUpdateInstall {
     param([array]$AllowedIds)
     if (-not (Test-WingetPresent)) { return }
-    if (-not (Test-Admin)) { Write-Host "🔒 Adminrechte empfohlen/erforderlich für Software-Updates." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Software)" | Out-File $LogFile -Append; return }
+    if (-not (Test-Admin)) { Write-Host "Adminrechte empfohlen/erforderlich für Software-Updates." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Software)" | Out-File $LogFile -Append; return }
     try {
         if ($AllowedIds -and $AllowedIds.Count -gt 0) {
             $totalCount = $AllowedIds.Count
@@ -498,14 +501,14 @@ function Invoke-SoftwareUpdateInstall {
     }
     catch { 
         Write-Progress -Activity "Software Installation" -Completed
-        Write-Host "❌ Fehler bei der Software-Installation: $($_.Exception.Message)" -ForegroundColor Red; "Fehler winget upgrade: $($_.Exception.Message)" | Out-File $LogFile -Append 
+        Write-Host "!!! Fehler bei der Software-Installation: $($_.Exception.Message)" -ForegroundColor Red; "!!! Fehler winget upgrade: $($_.Exception.Message)" | Out-File $LogFile -Append 
     }
 }
 
 function Show-ExcludeMenu {
     do {
         Write-Host ""
-        Write-Host "--------------- Exclude-Liste ----------------" -ForegroundColor Cyan
+        Write-Host "-------------- Ausschlussliste ---------------" -ForegroundColor Cyan
         Write-Host "WindowsKB : $($Excl.WindowsKB -join ', ')" -ForegroundColor Gray
         Write-Host "WingetIDs : $($Excl.WingetIDs -join ', ')" -ForegroundColor Gray
         Write-Host "----------------------------------------------" -ForegroundColor Cyan
@@ -549,7 +552,7 @@ function Show-ExcludeMenu {
                         if ($tmp.WindowsKB -and $tmp.WingetIDs) { $global:Excl = $tmp; Set-ExcludeConfig $Excl; Write-Host "Import erfolgreich." -ForegroundColor Green }
                         else { Write-Host "Ungültiges Format." -ForegroundColor Red }
                     }
-                    catch { Write-Host "Fehler beim Import: $($_.Exception.Message)" -ForegroundColor Red }
+                    catch { Write-Host "!!! Fehler beim Import: $($_.Exception.Message)" -ForegroundColor Red }
                 }
                 else { Write-Host "Datei nicht gefunden." -ForegroundColor Red }
             }
@@ -568,8 +571,8 @@ function Show-Menu {
     Write-Host "===============================" -ForegroundColor Cyan
     Write-Host "1) Windows Updates prüfen/installieren"
     Write-Host "2) Software Updates (winget) prüfen/installieren"
-    Write-Host "3) Alles prüfen (Windows + Software) – gruppiert, Exclude-toggle"
-    Write-Host "4) Exclude-Liste anzeigen/bearbeiten/exportieren/importieren"
+    Write-Host "3) Alles prüfen (Windows + Software) – gruppiert prüfen/installieren"
+    Write-Host "4) Ausschlussliste anzeigen/bearbeiten/exportieren/importieren"
     Write-Host "Q) Programm beenden (Quit)"
     Write-Host "===============================" -ForegroundColor Cyan
 }
@@ -577,7 +580,7 @@ function Show-Menu {
 # --- Hauptloop -----------------------------------------------------------------
 do {
     Show-Menu
-    $choice = Read-Host "Bitte Auswahl (1-4, Q)"
+    $choice = Read-Host "Bitte Auswahl (1-4 oder Q)"
 
     switch ($choice) {
         "1" {
@@ -591,7 +594,7 @@ do {
                     Invoke-WindowsUpdateInstall -AutoReboot:$auto -Allowed $allowed
                 }
                 elseif ($allowed.Count -eq 0) {
-                    Write-Host "Alles für Windows steht auf Exclude. Nichts zu installieren." -ForegroundColor Yellow
+                    Write-Host "Alles für Windows steht auf der Ausschlussliste. Nichts zu installieren." -ForegroundColor Yellow
                 }
             }
             else { Write-Host "Keine Windows Updates verfügbar." -ForegroundColor Yellow }
@@ -607,7 +610,7 @@ do {
                     Invoke-SoftwareUpdateInstall -AllowedIds $allowedIds
                 }
                 elseif ($allowedIds.Count -eq 0) {
-                    Write-Host "Alles für Software steht auf Exclude. Nichts zu installieren." -ForegroundColor Yellow
+                    Write-Host "Alles für Software steht auf der Ausschlussliste. Nichts zu installieren." -ForegroundColor Yellow
                 }
             }
             else { Write-Host "Keine Software Updates verfügbar." -ForegroundColor Yellow }
@@ -638,7 +641,7 @@ do {
                 }
                 else { Write-Host "Abgebrochen. Es wurden keine Updates installiert." -ForegroundColor Yellow }
             }
-            else { Write-Host "`nAlles auf Exclude – nichts zu installieren." -ForegroundColor Yellow }
+            else { Write-Host "`nAlles auf der Ausschlussliste – nichts zu installieren." -ForegroundColor Yellow }
         }
 
         "4" { Show-ExcludeMenu }
