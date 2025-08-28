@@ -96,11 +96,36 @@ function Import-PSWindowsUpdateOrExplain {
         return $false
     }
     try {
+        # Versuche zuerst normalen Import
         Import-Module PSWindowsUpdate -ErrorAction Stop
         return $true
     }
     catch {
+        # Falls normaler Import fehlschlägt, suche nach dem Modul in allen Pfaden und importiere explizit
+        $searchPaths = @(
+            "${env:ProgramFiles}\PowerShell\Modules",
+            "${env:ProgramFiles}\WindowsPowerShell\Modules", 
+            "${env:UserProfile}\Documents\PowerShell\Modules",
+            "${env:UserProfile}\Documents\WindowsPowerShell\Modules"
+        )
+        
+        foreach ($path in $searchPaths) {
+            $fullPath = Join-Path $path "PSWindowsUpdate"
+            if (Test-Path $fullPath) {
+                try {
+                    # Expliziter Import über Pfad
+                    Import-Module $fullPath -ErrorAction Stop
+                    Write-Host "✅ PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
+                    return $true
+                }
+                catch {
+                    continue
+                }
+            }
+        }
+        
         Write-Host "❌ Fehler beim Importieren von PSWindowsUpdate: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "💡 Versuchen Sie: Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
         if (Test-Path variable:LogFile) { "Fehler Import PSWindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append }
         return $false
     }
@@ -278,8 +303,9 @@ function Invoke-WindowsUpdateInstall {
         $allowedKBs = $Allowed | Where-Object { $_ -match '^\d{4,}$' }
         if ($allowedKBs.Count -gt 0) {
             Write-Progress -Activity "Windows Update Installation" -Status "Installiere ausgewählte Updates ($($allowedKBs.Count) Updates)..." -PercentComplete 25
-            $p = @{KBArticleID = $allowedKBs; AcceptAll = $true }; if ($AutoReboot) { $p.AutoReboot = $true }else { $p.IgnoreReboot = $true }
-            Install-WindowsUpdate @p | Tee-Object -FilePath $LogFile -Append | Out-Null
+            $installParams = @{KBArticleID = $allowedKBs; AcceptAll = $true }
+            if ($AutoReboot) { $installParams.AutoReboot = $true }else { $installParams.IgnoreReboot = $true }
+            Install-WindowsUpdate @installParams | Tee-Object -FilePath $LogFile -Append | Out-Null
         }
         else {
             Write-Progress -Activity "Windows Update Installation" -Status "Installiere alle verfügbaren Updates..." -PercentComplete 25
