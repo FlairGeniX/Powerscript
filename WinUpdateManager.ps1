@@ -117,7 +117,7 @@ function Import-PSWindowsUpdateOrExplain {
                 try {
                     # Expliziter Import über Pfad
                     Import-Module $fullPath -ErrorAction Stop
-                    Write-Host "PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
+                    #Write-Host "PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
                     return $true
                 }
                 catch {
@@ -148,7 +148,11 @@ function Show-NumberedList {
     }
 
     Write-Host ""
-    Write-Host "Möchten Sie Updates in der Ausschlussliste eintragen/entfernen? Wenn ja, dann Nummern (z.B. 1,3,5 oder 2-4). Wenn nicht, dann ENTER oder W=weiter eingeben" -ForegroundColor DarkGray
+    Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
+    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
+    Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
+    Write-Host "Wenn nicht, dann ENTER oder W=weiter eingeben." -ForegroundColor DarkGray
+
     $sel = Read-Host "Auswahl"
     if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $Items }
 
@@ -229,8 +233,11 @@ function Show-CombinedUpdateList {
     }
 
     Write-Host ""
-    Write-Host "(X markierte Updates stehen auf Ausschlussliste)"
-    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?Wenn ja, dann Nummern (z.B. 1,3,5 oder 2-4). Wenn nicht, dann ENTER oder W=weiter eingeben" -ForegroundColor DarkGray
+    Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
+    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
+    Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
+    Write-Host "Wenn nicht, dann ENTER oder W=weiter eingeben." ForegroundColor DarkGray
+
     $sel = Read-Host "Auswahl"
     if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $allItems }
 
