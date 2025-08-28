@@ -59,15 +59,51 @@ if (($Excl.WindowsKB.Count -eq 0) -and ($Excl.WingetIDs.Count -eq 0)) {
 # --- Utilities -----------------------------------------------------------------
 function Write-Section { param([string]$Text) Write-Host "`n$Text" -ForegroundColor Cyan }
 function Test-WingetPresent { [bool](Get-Command winget -ErrorAction SilentlyContinue) }
-function Test-PSWindowsUpdatePresent { [bool](Get-Module -ListAvailable -Name PSWindowsUpdate) }
+function Test-PSWindowsUpdatePresent { 
+    # Robustere Prüfung - suche in allen möglichen PowerShell-Modulpfaden
+    $moduleFound = $false
+    
+    # Standard Get-Module Prüfung
+    if (Get-Module -ListAvailable -Name PSWindowsUpdate -ErrorAction SilentlyContinue) {
+        $moduleFound = $true
+    }
+    
+    # Falls nicht gefunden, prüfe alle bekannten PowerShell-Modulpfade
+    if (-not $moduleFound) {
+        $searchPaths = @(
+            "${env:ProgramFiles}\PowerShell\Modules",
+            "${env:ProgramFiles}\WindowsPowerShell\Modules", 
+            "${env:UserProfile}\Documents\PowerShell\Modules",
+            "${env:UserProfile}\Documents\WindowsPowerShell\Modules"
+        )
+        
+        foreach ($path in $searchPaths) {
+            if (Test-Path (Join-Path $path "PSWindowsUpdate")) {
+                $moduleFound = $true
+                break
+            }
+        }
+    }
+    
+    return $moduleFound
+}
 function Import-PSWindowsUpdateOrExplain {
     if (-not (Test-PSWindowsUpdatePresent)) {
         Write-Host "❌ PSWindowsUpdate nicht gefunden." -ForegroundColor Red
         Write-Host "👉 Install-Module PSWindowsUpdate -Scope AllUsers -Force" -ForegroundColor Yellow
         Write-Host "   (NuGet ggf.: Get-PackageProvider NuGet -ForceBootstrap -Force)" -ForegroundColor Gray
-        "Fehler: PSWindowsUpdate fehlte." | Out-File $LogFile -Append; return $false
+        if (Test-Path variable:LogFile) { "Fehler: PSWindowsUpdate fehlte." | Out-File $LogFile -Append }
+        return $false
     }
-    Import-Module PSWindowsUpdate -ErrorAction Stop; return $true
+    try {
+        Import-Module PSWindowsUpdate -ErrorAction Stop
+        return $true
+    }
+    catch {
+        Write-Host "❌ Fehler beim Importieren von PSWindowsUpdate: $($_.Exception.Message)" -ForegroundColor Red
+        if (Test-Path variable:LogFile) { "Fehler Import PSWindowsUpdate: $($_.Exception.Message)" | Out-File $LogFile -Append }
+        return $false
+    }
 }
 
 # --- Anzeige & Toggle der Listen ----------------------------------------------
