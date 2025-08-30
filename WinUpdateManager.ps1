@@ -31,9 +31,26 @@ if (-not (Test-Admin)) {
 # --- Logging / Pfade -----------------------------------------------------------
 $LogDir = 'C:\Logs'
 $LogFile = Join-Path $LogDir 'SystemUpdates.log'
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+$PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
+$PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
+
+# Zentrales UTF-8 Logging (vermeidet "gespacte" Zeichen aus Unicode/UTF-16)
+function Write-Log {
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        [AllowNull()]
+        [string]$Text
+    )
+    process {
+        if ($null -ne $Text) {
+            Add-Content -Path $LogFile -Value $Text -Encoding UTF8
+        }
+    }
+}
 $ExcludePath = Join-Path $LogDir 'UpdateExcludes.json'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
-"=== Update-Check gestartet: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (PS $($PSVersionTable.PSVersion)) ===" | Out-File $LogFile -Append
+"=== Update-Check gestartet: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (PS $($PSVersionTable.PSVersion)) ===" | Out-File $LogFile -Append -Encoding utf8
 
 # --- Exclude-Konfiguration -----------------------------------------------------
 function Get-ExcludeConfig {
@@ -99,7 +116,16 @@ function Import-PSWindowsUpdateOrExplain {
     }
     try {
         # Versuche zuerst normalen Import
-        Import-Module PSWindowsUpdate -ErrorAction Stop
+        Import-Module PSWindowsUpdate -ErrorAction Stop -Force
+        
+        # Zusätzliche Prüfung: Stelle sicher dass die wichtigsten Cmdlets verfügbar sind
+        $requiredCmdlets = @('Get-WindowsUpdate', 'Get-WURebootStatus')
+        foreach ($cmdlet in $requiredCmdlets) {
+            if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
+                throw "Cmdlet $cmdlet nicht verfügbar nach Import"
+            }
+        }
+        
         return $true
     }
     catch {
@@ -116,9 +142,22 @@ function Import-PSWindowsUpdateOrExplain {
             if (Test-Path $fullPath) {
                 try {
                     # Expliziter Import über Pfad
-                    Import-Module $fullPath -ErrorAction Stop
-                    #Write-Host "PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
-                    return $true
+                    Import-Module $fullPath -ErrorAction Stop -Force
+                    
+                    # Prüfe wieder die Cmdlets
+                    $requiredCmdlets = @('Get-WindowsUpdate', 'Get-WURebootStatus')
+                    $allAvailable = $true
+                    foreach ($cmdlet in $requiredCmdlets) {
+                        if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
+                            $allAvailable = $false
+                            break
+                        }
+                    }
+                    
+                    if ($allAvailable) {
+                        #Write-Host "PSWindowsUpdate erfolgreich importiert aus: $fullPath" -ForegroundColor Green
+                        return $true
+                    }
                 }
                 catch {
                     continue
@@ -138,141 +177,184 @@ function Show-NumberedList {
     param([array]$Items, [string]$Kind, [ref]$ExcludeConfig)
     if (-not $Items -or $Items.Count -eq 0) { Write-Host "Keine $Kind Updates verfügbar." -ForegroundColor Yellow; return @() }
 
-    $i = 0; foreach ($it in $Items) {
-        $i++
-        $isExcluded = if ($Kind -eq 'Windows') { $ExcludeConfig.Value.WindowsKB -contains $it.Key } else { $ExcludeConfig.Value.WingetIDs -contains $it.Key }
-        $it | Add-Member Number $i -Force
-        $it | Add-Member Excluded $isExcluded -Force
-        $mark = if ($isExcluded) { '[X]' }else { '[ ]' }
-        Write-Host ("{0,2}. {1} {2}  {3}" -f $i, $mark, $it.Title, $it.Extra)
-    }
+    while ($true) {
+        $i = 0
+        foreach ($it in $Items) {
+            $i++
+            $isExcluded = if ($Kind -eq 'Windows') { $ExcludeConfig.Value.WindowsKB -contains $it.Key } else { $ExcludeConfig.Value.WingetIDs -contains $it.Key }
+            $it | Add-Member Number $i -Force
+            $it | Add-Member Excluded $isExcluded -Force
+            $mark = if ($isExcluded) { '[X]' } else { '[ ]' }
+            Write-Host ("{0,2}. {1} {2}  {3}" -f $i, $mark, $it.Title, $it.Extra)
+        }
 
-    Write-Host ""
-    Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
-    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
-    Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
-    Write-Host "Wenn nicht, dann ENTER oder W=weiter eingeben." -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
+        Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
+        Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
+        Write-Host "Wenn nicht, dann weiter=W/ENTER eingeben." -ForegroundColor DarkGray
 
-    $sel = Read-Host "Auswahl"
-    if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $Items }
+        $sel = Read-Host "Auswahl"
+        if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $Items }
 
-    $tokens = $sel -split '[,; ]+' | Where-Object { $_ -match '\S' }
-    $numbers = New-Object System.Collections.Generic.List[int]
-    foreach ($t in $tokens) {
-        if ($t -match '^\d+$') { $numbers.Add([int]$t) }
-        elseif ($t -match '^(\d+)-(\d+)$') { $from = [int]$matches[1]; $to = [int]$matches[2]; if ($from -le $to) { $from..$to | ForEach-Object { $numbers.Add($_) } } }
-    }
+        $tokens = $sel -split '[,; ]+' | Where-Object { $_ -match '\S' }
+        $numbers = New-Object System.Collections.Generic.List[int]
+        foreach ($t in $tokens) {
+            if ($t -match '^\d+$') { $numbers.Add([int]$t) }
+            elseif ($t -match '^(\d+)-(\d+)$') { $from = [int]$matches[1]; $to = [int]$matches[2]; if ($from -le $to) { $from..$to | ForEach-Object { $numbers.Add($_) } } }
+        }
 
-    foreach ($n in ($numbers | Select-Object -Unique | Where-Object { $_ -ge 1 -and $_ -le $Items.Count })) {
-        $item = $Items[$n - 1]
-        if ($Kind -eq 'Windows') {
-            if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
-                $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
+        foreach ($n in ($numbers | Select-Object -Unique | Where-Object { $_ -ge 1 -and $_ -le $Items.Count })) {
+            $item = $Items[$n - 1]
+            if ($Kind -eq 'Windows') {
+                if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
+                    $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
+                    Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
+                }
+                else {
+                    $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
+                    Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                }
             }
             else {
-                $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
+                    $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
+                    Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
+                }
+                else {
+                    $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
+                    Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                }
             }
         }
-        else {
-            if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
-                $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
-            }
-            else {
-                $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
-            }
-        }
+        Set-ExcludeConfig $ExcludeConfig.Value
+        # Schleife fortsetzen, um weiteres Togglen zu erlauben
     }
-    Set-ExcludeConfig $ExcludeConfig.Value
-    return $Items
 }
 
 # --- Kombinierte Anzeige für Option 3 (Windows + Software zusammen) -----------
 function Show-CombinedUpdateList {
     param([array]$WindowsItems, [array]$SoftwareItems, [ref]$ExcludeConfig)
     
-    $allItems = @()
-    $currentNumber = 1
-    
-    # Windows Updates hinzufügen
-    if ($WindowsItems -and $WindowsItems.Count -gt 0) {
-        Write-Host "`nWindows Updates:" -ForegroundColor Cyan
-        foreach ($item in $WindowsItems) {
-            $isExcluded = $ExcludeConfig.Value.WindowsKB -contains $item.Key
-            $item | Add-Member Number $currentNumber -Force
-            $item | Add-Member Excluded $isExcluded -Force
-            $item | Add-Member Kind 'Windows' -Force
-            $mark = if ($isExcluded) { '[X]' } else { '[ ]' }
-            Write-Host ("{0,2}. {1} {2}  {3}" -f $currentNumber, $mark, $item.Title, $item.Extra)
-            $allItems += $item
-            $currentNumber++
+    while ($true) {
+        $allItems = @()
+        $currentNumber = 1
+
+        # Windows Updates hinzufügen
+        if ($WindowsItems -and $WindowsItems.Count -gt 0) {
+            Write-Host "`nWindows Updates:" -ForegroundColor Cyan
+            foreach ($item in $WindowsItems) {
+                $isExcluded = $ExcludeConfig.Value.WindowsKB -contains $item.Key
+                $item | Add-Member Number $currentNumber -Force
+                $item | Add-Member Excluded $isExcluded -Force
+                $item | Add-Member Kind 'Windows' -Force
+                $mark = if ($isExcluded) { '[X]' } else { '[ ]' }
+                Write-Host ("{0,2}. {1} {2}  {3}" -f $currentNumber, $mark, $item.Title, $item.Extra)
+                $allItems += $item
+                $currentNumber++
+            }
         }
-    }
-    
-    # Software Updates hinzufügen
-    if ($SoftwareItems -and $SoftwareItems.Count -gt 0) {
-        Write-Host "`nSoftware Updates:" -ForegroundColor Cyan
-        foreach ($item in $SoftwareItems) {
-            $isExcluded = $ExcludeConfig.Value.WingetIDs -contains $item.Key
-            $item | Add-Member Number $currentNumber -Force
-            $item | Add-Member Excluded $isExcluded -Force
-            $item | Add-Member Kind 'Software' -Force
-            $mark = if ($isExcluded) { '[X]' } else { '[ ]' }
-            Write-Host ("{0,2}. {1} {2}  {3}" -f $currentNumber, $mark, $item.Title, $item.Extra)
-            $allItems += $item
-            $currentNumber++
+
+        # Software Updates hinzufügen
+        if ($SoftwareItems -and $SoftwareItems.Count -gt 0) {
+            Write-Host "`nSoftware Updates:" -ForegroundColor Cyan
+            foreach ($item in $SoftwareItems) {
+                $isExcluded = $ExcludeConfig.Value.WingetIDs -contains $item.Key
+                $item | Add-Member Number $currentNumber -Force
+                $item | Add-Member Excluded $isExcluded -Force
+                $item | Add-Member Kind 'Software' -Force
+                $mark = if ($isExcluded) { '[X]' } else { '[ ]' }
+                Write-Host ("{0,2}. {1} {2}  {3}" -f $currentNumber, $mark, $item.Title, $item.Extra)
+                $allItems += $item
+                $currentNumber++
+            }
         }
+
+        if ($allItems.Count -eq 0) {
+            Write-Host "Keine Updates verfügbar." -ForegroundColor Yellow
+            return @()
+        }
+
+        Write-Host ""
+        Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
+        Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
+        Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
+        Write-Host "Wenn nicht, dann Weiter=W/ENTER eingeben." -ForegroundColor DarkGray
+
+        $sel = Read-Host "Auswahl"
+        if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $allItems }
+
+        $tokens = $sel -split '[,; ]+' | Where-Object { $_ -match '\S' }
+        $numbers = New-Object System.Collections.Generic.List[int]
+        foreach ($t in $tokens) {
+            if ($t -match '^\d+$') { $numbers.Add([int]$t) }
+            elseif ($t -match '^(\d+)-(\d+)$') { $from = [int]$matches[1]; $to = [int]$matches[2]; if ($from -le $to) { $from..$to | ForEach-Object { $numbers.Add($_) } } }
+        }
+
+        foreach ($n in ($numbers | Select-Object -Unique | Where-Object { $_ -ge 1 -and $_ -le $allItems.Count })) {
+            $item = $allItems[$n - 1]
+            if ($item.Kind -eq 'Windows') {
+                if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
+                    $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
+                    Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
+                }
+                else {
+                    $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
+                    Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                }
+            }
+            else {
+                if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
+                    $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
+                    Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
+                }
+                else {
+                    $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
+                    Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
+                }
+            }
+        }
+        Set-ExcludeConfig $ExcludeConfig.Value
+        # Schleife fortsetzen, damit weiteres Togglen möglich ist
     }
-    
-    if ($allItems.Count -eq 0) {
-        Write-Host "Keine Updates verfügbar." -ForegroundColor Yellow
-        return @()
+}
+
+# --- Auswahl der zu installierenden Updates (A/K/Nummern) ---------------------
+function Select-InstallSelection {
+    param(
+        [Parameter(Mandatory = $true)][array]$Items,
+        [string]$Prompt = "Was installieren? Alle=A, Keine=K/Enter oder Nummern (z.B. 1,3,5 oder 2-4)"
+    )
+
+    if (-not $Items -or $Items.Count -eq 0) { return @() }
+
+    $inputUpdates = Read-Host $Prompt
+    if ([string]::IsNullOrWhiteSpace($inputUpdates) -or $inputUpdates -match '^[Kk]$') { return @() }
+    if ($inputUpdates -match '^[Aa]$') {
+        return @($Items | Where-Object { -not $_.Excluded })
     }
 
-    Write-Host ""
-    Write-Host "(Mit X markierte Updates stehen auf Ausschlussliste)" -ForegroundColor DarkGray
-    Write-Host "Sollen Einträge auf Ausschlussliste eingetragen/entfernt werden?" -ForegroundColor DarkGray
-    Write-Host "Wenn ja, dann Nummer(n) (z.B. 1,3,5 oder 2-4)." -ForegroundColor DarkGray
-    Write-Host "Wenn nicht, dann ENTER oder W=weiter eingeben." ForegroundColor DarkGray
-
-    $sel = Read-Host "Auswahl"
-    if ([string]::IsNullOrWhiteSpace($sel) -or $sel -match '^[Ww]$') { return $allItems }
-
-    $tokens = $sel -split '[,; ]+' | Where-Object { $_ -match '\S' }
+    $tokens = $inputUpdates -split '[,; ]+' | Where-Object { $_ -match '\S' }
     $numbers = New-Object System.Collections.Generic.List[int]
     foreach ($t in $tokens) {
         if ($t -match '^\d+$') { $numbers.Add([int]$t) }
-        elseif ($t -match '^(\d+)-(\d+)$') { $from = [int]$matches[1]; $to = [int]$matches[2]; if ($from -le $to) { $from..$to | ForEach-Object { $numbers.Add($_) } } }
+        elseif ($t -match '^(\d+)-(\d+)$') {
+            $from = [int]$matches[1]; $to = [int]$matches[2]
+            if ($from -le $to) { $from..$to | ForEach-Object { $numbers.Add($_) } }
+        }
     }
 
-    foreach ($n in ($numbers | Select-Object -Unique | Where-Object { $_ -ge 1 -and $_ -le $allItems.Count })) {
-        $item = $allItems[$n - 1]
-        if ($item.Kind -eq 'Windows') {
-            if ($ExcludeConfig.Value.WindowsKB -contains $item.Key) {
-                $ExcludeConfig.Value.WindowsKB = @($ExcludeConfig.Value.WindowsKB | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
-            }
-            else {
-                $ExcludeConfig.Value.WindowsKB += $item.Key; $ExcludeConfig.Value.WindowsKB = $ExcludeConfig.Value.WindowsKB | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
-            }
-        }
-        else {
-            if ($ExcludeConfig.Value.WingetIDs -contains $item.Key) {
-                $ExcludeConfig.Value.WingetIDs = @($ExcludeConfig.Value.WingetIDs | Where-Object { $_ -ne $item.Key }); $item.Excluded = $false
-                Write-Host (" - {0} von Ausschlussliste entfernt" -f $item.Title) -ForegroundColor Green
-            }
-            else {
-                $ExcludeConfig.Value.WingetIDs += $item.Key; $ExcludeConfig.Value.WingetIDs = $ExcludeConfig.Value.WingetIDs | Select-Object -Unique; $item.Excluded = $true
-                Write-Host (" + {0} zur Ausschlussliste hinzugefügt" -f $item.Title) -ForegroundColor Yellow
-            }
-        }
+    $picked = @()
+    $skipped = @()
+    foreach ($n in ($numbers | Select-Object -Unique | Where-Object { $_ -ge 1 -and $_ -le $Items.Count })) {
+        $it = $Items[$n - 1]
+        if ($it.Excluded) { $skipped += $it }
+        else { $picked += $it }
     }
-    Set-ExcludeConfig $ExcludeConfig.Value
-    return $allItems
+    if ($skipped.Count -gt 0) {
+        Write-Host ("Hinweis: {0} ausgewählte(r) Eintrag/Einträge wurden übersprungen (auf Ausschlussliste)." -f $skipped.Count) -ForegroundColor DarkYellow
+    }
+    return $picked
 }
 
 # --- Windows Updates -----------------------------------------------------------
@@ -305,25 +387,67 @@ function Invoke-WindowsUpdateInstall {
     param([switch]$AutoReboot, [array]$Allowed)
     if (-not (Import-PSWindowsUpdateOrExplain)) { return }
     if (-not (Test-Admin)) { Write-Host "Adminrechte nötig. Bitte als Administrator erneut ausführen." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Windows)" | Out-File $LogFile -Append; return }
+    
+    # Zusätzliche Prüfung: Stelle sicher, dass Get-WindowsUpdate verfügbar ist
+    if (-not (Get-Command Get-WindowsUpdate -ErrorAction SilentlyContinue)) {
+        Write-Host "Get-WindowsUpdate Cmdlet nicht verfügbar. PSWindowsUpdate Modul nicht korrekt geladen." -ForegroundColor Red
+        "!!! Fehler: Get-WindowsUpdate Cmdlet nicht verfügbar" | Out-File $LogFile -Append
+        return
+    }
+    
     try {
-        $allowedKBs = $Allowed | Where-Object { $_ -match '^\d{4,}$' }
+        # Extrahiere numerische KB-IDs aus übergebenen Keys (unterstützt z.B. "KB2267602" -> 2267602)
+        $allowedKBs = @()
+        foreach ($a in ($Allowed | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+            if ($a -match '(\d{4,})') { $allowedKBs += $matches[1] }
+        }
+        # Wenn eine Auswahl übergeben wurde, aber keine gültigen KB-IDs erkannt wurden, NICHT alle installieren
+        if ($Allowed -and $Allowed.Count -gt 0 -and ($null -eq $allowedKBs -or $allowedKBs.Count -eq 0)) {
+            Write-Host "Keine gültigen KB-IDs in der Auswahl erkannt – Windows-Installation übersprungen." -ForegroundColor Yellow
+            "Hinweis: Windows-Install übersprungen, keine gültigen KB-IDs in Auswahl: $($Allowed -join ', ')" | Out-File $LogFile -Append
+            return
+        }
+        $iwObjs = @()
         if ($allowedKBs.Count -gt 0) {
             Write-Progress -Activity "Windows Update Installation" -Status "Installiere ausgewählte Updates ($($allowedKBs.Count) Updates)..." -PercentComplete 25
-            $installParams = @{KBArticleID = $allowedKBs; AcceptAll = $true }
-            if ($AutoReboot) { $installParams.AutoReboot = $true }else { $installParams.IgnoreReboot = $true }
-            Install-WindowsUpdate @installParams | Tee-Object -FilePath $LogFile -Append | Out-Null
+            $installParams = @{KBArticleID = $allowedKBs; AcceptAll = $true; Install = $true }
+            if ($AutoReboot) { $installParams.AutoReboot = $true } else { $installParams.IgnoreReboot = $true }
+            $iwObjs = Get-WindowsUpdate @installParams
+            ($iwObjs | Out-String) | Write-Log | Out-Null
         }
         else {
             Write-Progress -Activity "Windows Update Installation" -Status "Installiere alle verfügbaren Updates..." -PercentComplete 25
-            if ($AutoReboot) { Install-WindowsUpdate -AcceptAll -AutoReboot | Tee-Object -FilePath $LogFile -Append | Out-Null }
-            else { Install-WindowsUpdate -AcceptAll -IgnoreReboot | Tee-Object -FilePath $LogFile -Append | Out-Null }
+            if ($AutoReboot) { $iwObjs = Get-WindowsUpdate -AcceptAll -Install -AutoReboot }
+            else { $iwObjs = Get-WindowsUpdate -AcceptAll -Install -IgnoreReboot }
+            ($iwObjs | Out-String) | Write-Log | Out-Null
         }
         Write-Progress -Activity "Windows Update Installation" -Status "Prüfe Neustart-Anforderungen..." -PercentComplete 90
         if (-not $AutoReboot) { $reboot = Get-WURebootStatus; if ($reboot -and $reboot.RebootRequired) { Write-Host "↻ Neustart erforderlich/empfohlen." -ForegroundColor Yellow } }
         Write-Progress -Activity "Windows Update Installation" -Status "Abgeschlossen" -PercentComplete 100
         Start-Sleep -Milliseconds 500
         Write-Progress -Activity "Windows Update Installation" -Completed
-        Write-Host "✅ Windows Updates: Installation abgeschlossen." -ForegroundColor Green
+        # Zusammenfassung Windows (erfolgreich/fehlgeschlagen)
+        try {
+            $succWU = @()
+            $failWU = @()
+            foreach ($o in ($iwObjs | Where-Object { $_ })) {
+                $nameWU = if ($o.PSObject.Properties['Title'] -and $o.Title) { $o.Title } elseif ($o.PSObject.Properties['KB'] -and $o.KB) { "KB$($o.KB)" } else { ($o | Out-String).Trim() }
+                $isSuccess = ($o.PSObject.Properties['Result'] -and ($o.Result -match 'Success|Succeeded|Installed|OK')) -or ($o.PSObject.Properties['Status'] -and ($o.Status -match 'Success|Installed|OK'))
+                $isFail = ($o.PSObject.Properties['Result'] -and ($o.Result -match 'Fail|Error')) -or ($o.PSObject.Properties['Status'] -and ($o.Status -match 'Fail|Error'))
+                if ($isSuccess) { $succWU += $nameWU }
+                elseif ($isFail) { $failWU += $nameWU }
+            }
+            # Entferne Duplikate
+            $succWU = $succWU | Select-Object -Unique
+            $failWU = $failWU | Select-Object -Unique
+            
+            Write-Host "Updates erfolgreich:" -ForegroundColor Green
+            if ($succWU -and $succWU.Count -gt 0) { $succWU | ForEach-Object { Write-Host " - $_" -ForegroundColor Green } } else { Write-Host " - Keine" -ForegroundColor DarkGreen }
+            Write-Host "Updates fehlgeschlagen:" -ForegroundColor Red
+            if ($failWU -and $failWU.Count -gt 0) { $failWU | ForEach-Object { Write-Host " - $_" -ForegroundColor Yellow } } else { Write-Host " - Keine" -ForegroundColor DarkYellow }
+        }
+        catch { }
+        Write-Host "Windows Updates: Installation abgeschlossen." -ForegroundColor Green
     }
     catch { 
         Write-Progress -Activity "Windows Update Installation" -Completed
@@ -335,7 +459,7 @@ function Invoke-WindowsUpdateInstall {
 
 function Find-SoftwareUpdates {
     if (-not (Test-WingetPresent)) {
-        Write-Host "!! winget nicht verfügbar. Installiere/aktualisiere den *App-Installer* (Microsoft Store)." -ForegroundColor Red
+        Write-Host "! winget nicht verfügbar. Installiere/aktualisiere den *App-Installer* (Microsoft Store)." -ForegroundColor Red
         "!!! Fehler: winget fehlte." | Out-File $LogFile -Append; return @()
     }
 
@@ -480,10 +604,45 @@ function Find-SoftwareUpdates {
 }
 
 function Invoke-SoftwareUpdateInstall {
-    param([array]$AllowedIds)
+    param(
+        [array]$AllowedIds,
+        [hashtable]$NameById
+    )
     if (-not (Test-WingetPresent)) { return }
     if (-not (Test-Admin)) { Write-Host "Adminrechte empfohlen/erforderlich für Software-Updates." -ForegroundColor Yellow; "Abbruch: Keine Adminrechte (Software)" | Out-File $LogFile -Append; return }
     try {
+        # Einmalige Aktualisierung der winget-Quellen bei Hash-Mismatch, dann Retry
+        if (-not (Get-Variable -Name WingetSourceRefreshed -Scope Script -ErrorAction SilentlyContinue)) { $script:WingetSourceRefreshed = $false }
+        $results = New-Object System.Collections.Generic.List[object]
+
+        function Invoke-WingetUpgradeOnce([string]$pkgId) {
+            $wingetCmdArgs = @('upgrade', '--id', $pkgId, '--exact', '--source', 'winget', '--accept-source-agreements', '--accept-package-agreements', '--silent', '--disable-interactivity')
+            $outPath = Join-Path $LogDir "winget-$($pkgId)-out.log"
+            $errPath = Join-Path $LogDir "winget-$($pkgId)-err.log"
+            $proc = Start-Process -FilePath 'winget' -ArgumentList $wingetCmdArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outPath -RedirectStandardError $errPath
+            if (Test-Path $outPath) { Get-Content $outPath | Out-File $LogFile -Append }
+            if (Test-Path $errPath) { Get-Content $errPath | Out-File $LogFile -Append }
+            $outText = if (Test-Path $outPath) { Get-Content $outPath -Raw } else { '' }
+            $errText = if (Test-Path $errPath) { Get-Content $errPath -Raw } else { '' }
+            $noUpdatePatterns = @(
+                'No applicable update found',
+                'No installed package found',
+                'ist nicht installiert',
+                'keine.*aktualisierung',
+                'keine.*updates.*verfügbar'
+            )
+            $hashMismatch = ($outText -match 'Installer-Hash.*stimmt.*nicht' -or $errText -match 'Installer-Hash.*stimmt.*nicht' -or $outText -match 'Installer hash' -or $errText -match 'Installer hash' -or $proc.ExitCode -eq -1978335215)
+            $noUpdate = ($noUpdatePatterns | ForEach-Object { $outText -match $_ -or $errText -match $_ } | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count)
+            return [pscustomobject]@{
+                Id           = $pkgId
+                ExitCode     = $proc.ExitCode
+                OutText      = $outText
+                ErrText      = $errText
+                HashMismatch = [bool]$hashMismatch
+                NoUpdate     = [bool]($noUpdate -gt 0)
+                Success      = ($proc.ExitCode -eq 0 -and -not $hashMismatch -and -not ($noUpdate -gt 0))
+            }
+        }
         if ($AllowedIds -and $AllowedIds.Count -gt 0) {
             $totalCount = $AllowedIds.Count
             $currentCount = 0
@@ -491,20 +650,72 @@ function Invoke-SoftwareUpdateInstall {
                 $currentCount++
                 $percent = [math]::Round(($currentCount / $totalCount) * 100)
                 Write-Progress -Activity "Software Installation" -Status "Installiere $id ($currentCount von $totalCount)" -PercentComplete $percent
-                winget upgrade --id $id --accept-source-agreements --accept-package-agreements `
-                | Tee-Object -FilePath $LogFile -Append | Out-Null
+                try {
+                    $res = Invoke-WingetUpgradeOnce -pkgId $id
+                    if ($res.HashMismatch -and -not $script:WingetSourceRefreshed) {
+                        Write-Host "↻ Aktualisiere winget-Quellen einmalig (winget source update)..." -ForegroundColor DarkYellow
+                        try { & winget source update | Out-Null } catch {}
+                        $script:WingetSourceRefreshed = $true
+                        $res = Invoke-WingetUpgradeOnce -pkgId $id
+                    }
+
+                    $pkgName = if ($NameById -and $NameById.ContainsKey($id)) { $NameById[$id] } else { $id }
+                    if ($res.ExitCode -ne 0 -and $res.HashMismatch) {
+                        Write-Host "${id}: Installer-Hash stimmt nicht. Manifest vermutlich veraltet. Führen Sie 'winget source update' aus und versuchen Sie es später erneut oder setzen Sie das Paket vorübergehend auf die Ausschlussliste." -ForegroundColor Yellow
+                        $ans = Read-Host "${id} jetzt zur Ausschlussliste hinzufügen? (J/N)"
+                        if ($ans -match '^(J|j)$') { $Excl.WingetIDs += $id; $Excl.WingetIDs = $Excl.WingetIDs | Select-Object -Unique; Set-ExcludeConfig $Excl; Write-Host "${id} auf Ausschlussliste gesetzt." -ForegroundColor Yellow }
+                        "Hinweis: ${id} – Installer-Hash-Mismatch erkannt (ExitCode $($res.ExitCode))." | Out-File $LogFile -Append
+                        $results.Add([pscustomobject]@{Id = $id; Name = $pkgName; Status = 'HashMismatch'; ExitCode = $res.ExitCode }) | Out-Null
+                    }
+                    elseif ($res.NoUpdate) {
+                        Write-Host "ℹ︎ ${id}: Keine Aktualisierung durchgeführt (laut winget)." -ForegroundColor Yellow
+                        $results.Add([pscustomobject]@{Id = $id; Name = $pkgName; Status = 'NoUpdate'; ExitCode = $res.ExitCode }) | Out-Null
+                    }
+                    elseif ($res.Success) {
+                        Write-Host "✓ ${id}: Upgrade abgeschlossen" -ForegroundColor Green
+                        $results.Add([pscustomobject]@{Id = $id; Name = $pkgName; Status = 'Success'; ExitCode = $res.ExitCode }) | Out-Null
+                    }
+                    else {
+                        Write-Host "${id}: Upgrade fehlgeschlagen (ExitCode $($res.ExitCode)). Siehe Log." -ForegroundColor Red
+                        $results.Add([pscustomobject]@{Id = $id; Name = $pkgName; Status = 'Failed'; ExitCode = $res.ExitCode }) | Out-Null
+                    }
+                }
+                catch {
+                    Write-Host "${id}: winget-Aufruf fehlgeschlagen: $($_.Exception.Message)" -ForegroundColor Red
+                    "!!! Fehler winget ($id): $($_.Exception.Message)" | Out-File $LogFile -Append
+                    $pkgName = if ($NameById -and $NameById.ContainsKey($id)) { $NameById[$id] } else { $id }
+                    $results.Add([pscustomobject]@{Id = $id; Name = $pkgName; Status = 'Exception'; ExitCode = $null }) | Out-Null
+                }
             }
         }
         else {
             Write-Progress -Activity "Software Installation" -Status "Installiere alle verfügbaren Updates..." -PercentComplete 50
-            $excludeArg = if ($Excl.WingetIDs.Count -gt 0) { "--exclude $($Excl.WingetIDs -join ',')" } else { "" }
-            winget upgrade --all --accept-source-agreements --accept-package-agreements $excludeArg `
-            | Tee-Object -FilePath $LogFile -Append | Out-Null
+            $wingetCmdArgs = @('upgrade', '--all', '--source', 'winget', '--accept-source-agreements', '--accept-package-agreements', '--silent', '--disable-interactivity')
+            if ($Excl.WingetIDs -and $Excl.WingetIDs.Count -gt 0) { $wingetCmdArgs += '--exclude'; $wingetCmdArgs += ($Excl.WingetIDs -join ',') }
+            try {
+                $proc = Start-Process -FilePath 'winget' -ArgumentList $wingetCmdArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $LogDir 'winget-all-out.log') -RedirectStandardError (Join-Path $LogDir 'winget-all-err.log')
+                if (Test-Path (Join-Path $LogDir 'winget-all-out.log')) { Get-Content (Join-Path $LogDir 'winget-all-out.log') | Out-File $LogFile -Append }
+                if (Test-Path (Join-Path $LogDir 'winget-all-err.log')) { Get-Content (Join-Path $LogDir 'winget-all-err.log') | Out-File $LogFile -Append }
+                if ($proc.ExitCode -ne 0) { Write-Host "winget --all: ExitCode $($proc.ExitCode). Siehe Log." -ForegroundColor Red }
+            }
+            catch { Write-Host "winget --all fehlgeschlagen: $($_.Exception.Message)" -ForegroundColor Red; "!!! Fehler winget --all: $($_.Exception.Message)" | Out-File $LogFile -Append }
         }
         Write-Progress -Activity "Software Installation" -Status "Abgeschlossen" -PercentComplete 100
         Start-Sleep -Milliseconds 500
         Write-Progress -Activity "Software Installation" -Completed
-        Write-Host "✅ Software Updates: Installation abgeschlossen." -ForegroundColor Green
+        # Zusammenfassung (ohne Zählwerte)
+        # Zusammenfassung (Listen der Namen)
+        if ($results.Count -gt 0) {
+            $succNames = ($results | Where-Object { $_.Status -eq 'Success' } | ForEach-Object { $_.Name })
+            $failNames = ($results | Where-Object { $_.Status -in @('Failed', 'HashMismatch', 'Exception') } | ForEach-Object { $_.Name })
+            Write-Host "Updates erfolgreich:" -ForegroundColor Green
+            if ($succNames -and $succNames.Count -gt 0) { $succNames | ForEach-Object { Write-Host " - $_" -ForegroundColor Green } } else { Write-Host " - Keine" -ForegroundColor DarkGreen }
+            Write-Host "Updates fehlgeschlagen:" -ForegroundColor Red
+            if ($failNames -and $failNames.Count -gt 0) { $failNames | ForEach-Object { Write-Host " - $_" -ForegroundColor Yellow } } else { Write-Host " - Keine" -ForegroundColor DarkYellow }
+        }
+        else {
+            Write-Host "Software Updates: Installation abgeschlossen." -ForegroundColor Green
+        }
     }
     catch { 
         Write-Progress -Activity "Software Installation" -Completed
@@ -592,63 +803,85 @@ do {
     switch ($choice) {
         "1" {
             Write-Section "Windows Updates verfügbar:"
-            $win = Find-WindowsUpdates
-            if ($win.Count -gt 0) {
+            while ($true) {
+                $win = Find-WindowsUpdates
+                if (-not $win -or $win.Count -le 0) { Write-Host "Keine Windows Updates verfügbar." -ForegroundColor Yellow; break }
                 $win = Show-NumberedList -Items $win -Kind 'Windows' -ExcludeConfig ([ref]$Excl)
-                $allowed = $win | Where-Object { -not $_.Excluded } | Select-Object -ExpandProperty Key
-                if ($allowed.Count -gt 0 -and (Read-Host "Sollen die NICHT ausgeschlossenen Windows-Updates installiert werden? (J/N)") -match '^(J|j)$') {
+                $selected = Select-InstallSelection -Items $win -Prompt "Welche Windows-Updates installieren? A=Alle, K=Keine/Enter, Nummern (z.B. 1,3,5 oder 2-4)"
+                $allowed = @($selected | Select-Object -ExpandProperty Key -ErrorAction SilentlyContinue)
+                if ($allowed.Count -gt 0) {
                     $auto = (Read-Host "Bei Bedarf automatisch neu starten? (J/N)") -match '^(J|j)$'
                     Invoke-WindowsUpdateInstall -AutoReboot:$auto -Allowed $allowed
+                    # Nach der Installation erneut prüfen/auswählen, bis Nutzer beendet
+                    continue
                 }
-                elseif ($allowed.Count -eq 0) {
-                    Write-Host "Alles für Windows steht auf der Ausschlussliste. Nichts zu installieren." -ForegroundColor Yellow
+                else {
+                    Write-Host "Keine Windows-Updates ausgewählt." -ForegroundColor Yellow
+                    break
                 }
             }
-            else { Write-Host "Keine Windows Updates verfügbar." -ForegroundColor Yellow }
         }
 
         "2" {
             Write-Section "Software Updates verfügbar:"
-            $sw = Find-SoftwareUpdates
-            if ($sw.Count -gt 0) {
+            while ($true) {
+                $sw = Find-SoftwareUpdates
+                if (-not $sw -or $sw.Count -le 0) { Write-Host "Keine Software Updates verfügbar." -ForegroundColor Yellow; break }
                 $sw = Show-NumberedList -Items $sw -Kind 'Software' -ExcludeConfig ([ref]$Excl)
-                $allowedIds = $sw | Where-Object { -not $_.Excluded } | Select-Object -ExpandProperty Key
-                if ($allowedIds.Count -gt 0 -and (Read-Host "Sollen die NICHT ausgeschlossenen Software-Updates installiert werden? (J/N)") -match '^(J|j)$') {
-                    Invoke-SoftwareUpdateInstall -AllowedIds $allowedIds
+                $selected = Select-InstallSelection -Items $sw -Prompt "Welche Software-Updates installieren? A=Alle, K=Keine/Enter, Nummern (z.B. 1,3,5 oder 2-4)"
+                $allowedIds = @($selected | Select-Object -ExpandProperty Key -ErrorAction SilentlyContinue)
+                # Baue Name-Map: Id -> Name aus Raw.Name, sonst aus Title bis vor " ("
+                $nameById = @{}
+                foreach ($it in $sw) {
+                    $n = if ($it.Raw -and $it.Raw.PSObject.Properties['Name']) { $it.Raw.Name } else { ($it.Title -replace '\s*\(.*$', '').Trim() }
+                    if (-not [string]::IsNullOrWhiteSpace($it.Key)) { $nameById[$it.Key] = $n }
                 }
-                elseif ($allowedIds.Count -eq 0) {
-                    Write-Host "Alles für Software steht auf der Ausschlussliste. Nichts zu installieren." -ForegroundColor Yellow
+                if ($allowedIds.Count -gt 0) { 
+                    Invoke-SoftwareUpdateInstall -AllowedIds $allowedIds -NameById $nameById
+                    # Nach der Installation erneut prüfen/auswählen
+                    continue
+                }
+                else { 
+                    Write-Host "Keine Software-Updates ausgewählt." -ForegroundColor Yellow 
+                    break
                 }
             }
-            else { Write-Host "Keine Software Updates verfügbar." -ForegroundColor Yellow }
         }
 
         "3" {
             Write-Section "Verfügbare Updates (Windows + Software):"
-            Write-Host "Suche nach Windows Updates..." -ForegroundColor Gray
-            $win = Find-WindowsUpdates
-            Write-Host "Suche nach Software Updates..." -ForegroundColor Gray
-            $sw = Find-SoftwareUpdates
+            while ($true) {
+                Write-Host "Suche nach Windows Updates..." -ForegroundColor Gray
+                $win = Find-WindowsUpdates
+                Write-Host "Suche nach Software Updates..." -ForegroundColor Gray
+                $sw = Find-SoftwareUpdates
 
-            # Verwende die neue kombinierte Anzeige-Funktion
-            $allUpdates = Show-CombinedUpdateList -WindowsItems $win -SoftwareItems $sw -ExcludeConfig ([ref]$Excl)
+                # Verwende die neue kombinierte Anzeige-Funktion
+                $allUpdates = Show-CombinedUpdateList -WindowsItems $win -SoftwareItems $sw -ExcludeConfig ([ref]$Excl)
+                if (-not $allUpdates -or $allUpdates.Count -le 0) { Write-Host "Keine Updates verfügbar." -ForegroundColor Yellow; break }
 
-            # Filtere erlaubte Updates aus der kombinierten Liste
-            $allowedKBs = $allUpdates | Where-Object { $_.Kind -eq 'Windows' -and (-not $_.Excluded) } | Select-Object -ExpandProperty Key
-            $allowedIDs = $allUpdates | Where-Object { $_.Kind -eq 'Software' -and (-not $_.Excluded) } | Select-Object -ExpandProperty Key
+                # Auswahl der Installation aus der kombinierten Liste
+                $selectedCombined = Select-InstallSelection -Items $allUpdates -Prompt "Welche Updates installieren? A=Alle, K=Keine/Enter, Nummern (z.B. 1,3,5 oder 2-4)"
+                $allowedKBs = @($selectedCombined | Where-Object { $_.Kind -eq 'Windows' } | Select-Object -ExpandProperty Key -ErrorAction SilentlyContinue)
+                $allowedIDs = @($selectedCombined | Where-Object { $_.Kind -eq 'Software' } | Select-Object -ExpandProperty Key -ErrorAction SilentlyContinue)
 
-            if (($allowedKBs.Count -gt 0) -or ($allowedIDs.Count -gt 0)) {
-                if ((Read-Host "`nSollen alle NICHT ausgeschlossenen Updates installiert werden? (J/N)") -match '^(J|j)$') {
+                if (($allowedKBs.Count -gt 0) -or ($allowedIDs.Count -gt 0)) {
                     if ($allowedKBs.Count -gt 0) {
                         $auto = (Read-Host "Bei Bedarf automatisch neu starten? (J/N)") -match '^(J|j)$'
                         Invoke-WindowsUpdateInstall -AutoReboot:$auto -Allowed $allowedKBs
                     }
-                    if ($allowedIDs.Count -gt 0) { Invoke-SoftwareUpdateInstall -AllowedIds $allowedIDs }
-                    Write-Host "✅ Updates erfolgreich!" -ForegroundColor Green
+                    if ($allowedIDs.Count -gt 0) {
+                        # Name-Map nur für Software-Items aufbauen
+                        $nameById = @{}
+                        foreach ($it in $sw) { if ($it -and $it.Key) { $n = if ($it.Raw -and $it.Raw.PSObject.Properties['Name']) { $it.Raw.Name } else { ($it.Title -replace '\s*\(.*$', '').Trim() }; $nameById[$it.Key] = $n } }
+                        Invoke-SoftwareUpdateInstall -AllowedIds $allowedIDs -NameById $nameById
+                    }
+                    Write-Host "Updates erfolgreich!" -ForegroundColor Green
+                    # Nach der Installation erneut prüfen/auswählen
+                    continue
                 }
-                else { Write-Host "Abgebrochen. Es wurden keine Updates installiert." -ForegroundColor Yellow }
+                else { Write-Host "Keine Updates ausgewählt." -ForegroundColor Yellow; break }
             }
-            else { Write-Host "`nAlles auf der Ausschlussliste – nichts zu installieren." -ForegroundColor Yellow }
         }
 
         "4" { Show-ExcludeMenu }
